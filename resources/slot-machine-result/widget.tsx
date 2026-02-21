@@ -82,7 +82,7 @@ const propsSchema = z.object({
   reelImages: z.array(z.string()),
   symbols: z.array(z.string()),
   won: z.boolean(),
-  totalContribution: z.number(),
+  issuesClosed: z.number(),
   winChanceUsed: z.number(),
   message: z.string(),
 });
@@ -148,6 +148,12 @@ export default function SlotMachineResult() {
           won ? "border-success/50" : "border-default"
         }`}
       >
+        <p className="text-xs text-tertiary text-center mb-3">
+          Next spin win chance:{" "}
+          <span className="font-medium text-info">
+            {(props.winChanceUsed * 100).toFixed(1)}%
+          </span>
+        </p>
         {/* Reels */}
         <div className="flex justify-center items-center gap-4 mb-4">
           {reels.map((fruit, i) => (
