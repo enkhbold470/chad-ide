@@ -1,4 +1,4 @@
-import { MCPServer, object, text, widget } from "mcp-use/server";
+import { MCPServer, error, object, text, widget } from "mcp-use/server";
 import { z } from "zod";
 
 const baseUrl = process.env.MCP_URL || "http://localhost:3000";
@@ -77,25 +77,29 @@ server.tool(
 );
 
 /**
- * Slot machine tool — spin and win. Odds improve with total contribution.
+ * Slot machine tool — spin and win. Odds improve with issues closed in the repo.
  */
 const SLOT_SYMBOLS = fruits.map((f) => f.fruit);
-const BASE_WIN_CHANCE = 0.08; // 8% base chance for 3-of-a-kind
-const MAX_CONTRIBUTION_BONUS = 0.22; // up to 22% bonus → 30% max win chance
-const CONTRIBUTION_SCALE = 5000; // contribution / 5000 = bonus (capped)
+const BASE_WIN_CHANCE = 0.05; // 5% base chance for 3-of-a-kind
+const MAX_CONTRIBUTION_BONUS = 0.25; // up to 25% bonus → 30% max win chance
+const CONTRIBUTION_PER_ISSUE = 100; // each closed issue = 100 contribution points
+const CONTRIBUTION_SCALE = 5000; // 50 issues closed ≈ max bonus
 
 server.tool(
   {
     name: "slot-machine-spin",
     description:
-      "Spin the slot machine. Returns 3 reel symbols. Winning chance (3 matching symbols) increases with total contribution.",
+      "Spin the slot machine. Winning chance is based on how many issues the user has closed in the repo. Provide repo and GitHub username to look up their count automatically.",
     schema: z.object({
-      totalContribution: z
-        .number()
-        .min(0)
-        .optional()
+      repo: z
+        .string()
         .describe(
-          "Total contribution score for the person. Higher values improve win odds. Omit for base odds."
+          "Repository in owner/repo format (e.g. facebook/react). Used to look up user's closed-issue count."
+        ),
+      githubUsername: z
+        .string()
+        .describe(
+          "The GitHub username of the person spinning. Their closed-issue count in the repo determines win chance."
         ),
     }),
     widget: {
@@ -104,9 +108,19 @@ server.tool(
       invoked: "Spin complete",
     },
   },
-  async ({ totalContribution = 0 }) => {
+  async ({ repo, githubUsername }) => {
+    let issuesClosed = 0;
+    try {
+      const { closeCounts } = await fetchLeaderboardData(repo);
+      const user = closeCounts.get(githubUsername);
+      issuesClosed = user?.count ?? 0;
+    } catch {
+      // Fall back to base odds if leaderboard fetch fails
+    }
+
+    const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
     const contributionBonus = Math.min(
-      totalContribution / CONTRIBUTION_SCALE,
+      contribution / CONTRIBUTION_SCALE,
       MAX_CONTRIBUTION_BONUS
     );
     const winChance = BASE_WIN_CHANCE + contributionBonus;
@@ -134,7 +148,7 @@ server.tool(
         reelImages,
         symbols: SLOT_SYMBOLS,
         won,
-        totalContribution,
+        issuesClosed,
         winChanceUsed: winChance,
         message,
       },
@@ -143,31 +157,294 @@ server.tool(
   }
 );
 
+/**
+ * Fetch a public GitHub repo's issue list.
+ */
 server.tool(
   {
-    name: "get-fruit-details",
-    description: "Get detailed information about a specific fruit",
+    name: "get-repo-issues",
+    description:
+      "Get the list of issues from a public GitHub repository. Use owner/repo format (e.g. facebook/react).",
     schema: z.object({
-      fruit: z.string().describe("The fruit name"),
+      repo: z
+        .string()
+        .describe(
+          "Repository in owner/repo format (e.g. facebook/react, vercel/next.js)"
+        ),
+      state: z
+        .enum(["open", "closed", "all"])
+        .optional()
+        .describe("Filter by issue state. Default: open"),
+      limit: z
+        .number()
+        .min(1)
+        .max(100)
+        .optional()
+        .describe("Max number of issues to return. Default: 30"),
+      githubUsername: z
+        .string()
+        .optional()
+        .describe(
+          "GitHub username of the viewer. Used to show their next spin win chance (5% base + bonus per issue closed)."
+        ),
     }),
-    outputSchema: z.object({
-      fruit: z.string(),
-      color: z.string(),
-      facts: z.array(z.string()),
-    }),
+    annotations: { openWorldHint: true },
+    widget: {
+      name: "repo-issues-todo",
+      invoking: "Fetching issues...",
+      invoked: "Issues loaded",
+    },
   },
-  async ({ fruit }) => {
-    const found = fruits.find(
-      (f) => f.fruit?.toLowerCase() === fruit?.toLowerCase()
+  async ({ repo, state = "open", limit = 30, githubUsername }) => {
+    const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
+    const [owner, name] = normalized.split("/");
+    if (!owner || !name) {
+      return error("Invalid repo format. Use owner/repo (e.g. facebook/react)");
+    }
+
+    try {
+      const params = new URLSearchParams({
+        state,
+        per_page: String(Math.min(limit, 100)),
+        page: "1",
+      });
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "mcp-widget-server",
+      };
+      const token = process.env.GITHUB_TOKEN;
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const res = await fetch(
+        `https://api.github.com/repos/${owner}/${name}/issues?${params}`,
+        { headers }
+      );
+
+      if (!res.ok) {
+        if (res.status === 404) {
+          return error(`Repository not found: ${repo}`);
+        }
+        if (res.status === 403) {
+          return error(
+            "GitHub API rate limit exceeded. Try again later or use a GitHub token."
+          );
+        }
+        return error(`GitHub API error: ${res.status} ${res.statusText}`);
+      }
+
+      const data = (await res.json()) as Array<{
+        pull_request?: unknown;
+        number: number;
+        title: string;
+        state: string;
+        html_url: string;
+        user?: { login: string };
+        created_at: string;
+      }>;
+      const issues = data
+        .filter((item) => !item.pull_request)
+        .slice(0, limit)
+        .map((item) => ({
+          number: item.number,
+          title: item.title,
+          state: item.state,
+          url: item.html_url,
+          author: item.user?.login ?? "unknown",
+          createdAt: item.created_at,
+        }));
+
+      let issuesClosed = 0;
+      if (githubUsername) {
+        try {
+          const { closeCounts } = await fetchLeaderboardData(repo);
+          issuesClosed = closeCounts.get(githubUsername)?.count ?? 0;
+        } catch {
+          // Use base odds if leaderboard fetch fails
+        }
+      }
+
+      const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
+      const contributionBonus = Math.min(
+        contribution / CONTRIBUTION_SCALE,
+        MAX_CONTRIBUTION_BONUS
+      );
+      const winChancePercent = (
+        (BASE_WIN_CHANCE + contributionBonus) *
+        100
+      ).toFixed(1);
+
+      return widget({
+        props: {
+          repo: normalized,
+          state,
+          issues,
+          count: issues.length,
+          winChancePercent: githubUsername ? `${winChancePercent}%` : undefined,
+        },
+        output: text(
+          `Found ${issues.length} ${state} issues in ${normalized}`
+        ),
+      });
+    } catch (err) {
+      console.error("get-repo-issues failed:", err);
+      return error(
+        `Failed to fetch issues: ${err instanceof Error ? err.message : "Unknown error"}`
+      );
+    }
+  }
+);
+
+/** Leaderboard cache: 24h TTL. Stores full closeCounts per repo. */
+const leaderboardCache = new Map<
+  string,
+  { data: Map<string, { count: number; avatarUrl?: string }>; expires: number }
+>();
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function fetchLeaderboardData(repo: string, pages = 3): Promise<{
+  repo: string;
+  closeCounts: Map<string, { count: number; avatarUrl?: string }>;
+}> {
+  const normalized = repo
+    .replace(/^https?:\/\/github\.com\//, "")
+    .replace(/\/$/, "");
+  const [owner, name] = normalized.split("/");
+  if (!owner || !name) {
+    throw new Error("Invalid repo format. Use owner/repo (e.g. facebook/react)");
+  }
+
+  const cacheKey = `${normalized}:${pages}`;
+  const cached = leaderboardCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return { repo: normalized, closeCounts: cached.data };
+  }
+
+  const headers: Record<string, string> = {
+    Accept: "application/vnd.github.v3+json",
+    "User-Agent": "mcp-widget-server",
+  };
+  const token = process.env.GITHUB_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const closeCounts = new Map<string, { count: number; avatarUrl?: string }>();
+
+  for (let page = 1; page <= pages; page++) {
+    const res = await fetch(
+      `https://api.github.com/repos/${owner}/${name}/issues/events?per_page=100&page=${page}`,
+      { headers }
     );
-    return object({
-      fruit: found?.fruit ?? fruit,
-      color: found?.color ?? "unknown",
-      facts: [
-        `${fruit} is a delicious fruit`,
-        `Color: ${found?.color ?? "unknown"}`,
-      ],
-    });
+    if (!res.ok) {
+      if (res.status === 404) throw new Error(`Repository not found: ${repo}`);
+      if (res.status === 403)
+        throw new Error(
+          "GitHub API rate limit exceeded. Use GITHUB_TOKEN for higher limits."
+        );
+      throw new Error(`GitHub API error: ${res.status}`);
+    }
+    const events = (await res.json()) as Array<{
+      event?: string;
+      actor?: { login: string; avatar_url?: string };
+    }>;
+    for (const ev of events) {
+      if (ev.event === "closed" && ev.actor?.login) {
+        const login = ev.actor.login;
+        const current = closeCounts.get(login) ?? {
+          count: 0,
+          avatarUrl: ev.actor.avatar_url,
+        };
+        closeCounts.set(login, {
+          count: current.count + 1,
+          avatarUrl: current.avatarUrl ?? ev.actor.avatar_url,
+        });
+      }
+    }
+    if (events.length < 100) break;
+  }
+
+  leaderboardCache.set(cacheKey, {
+    data: new Map(closeCounts),
+    expires: Date.now() + CACHE_TTL_MS,
+  });
+  return { repo: normalized, closeCounts };
+}
+
+/**
+ * Leaderboard: who closed the most issues in a repo.
+ * Uses GitHub issue events API (closed events).
+ * Cached for 24h; re-fetches daily. Cumulative counts never reset.
+ */
+server.tool(
+  {
+    name: "get-repo-issues-leaderboard",
+    description:
+      "Get a leaderboard of who closed the most issues in a public GitHub repository. Uses owner/repo format.",
+    schema: z.object({
+      repo: z
+        .string()
+        .describe(
+          "Repository in owner/repo format (e.g. facebook/react, enkhbold470/chad-ide)"
+        ),
+      limit: z
+        .number()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Max number of top contributors to return. Default: 10"),
+      pages: z
+        .number()
+        .min(1)
+        .max(5)
+        .optional()
+        .describe(
+          "Number of event pages to fetch (100 events per page). More = more history. Default: 2"
+        ),
+    }),
+    annotations: { openWorldHint: true },
+    widget: {
+      name: "repo-issues-leaderboard",
+      invoking: "Fetching leaderboard...",
+      invoked: "Leaderboard loaded",
+    },
+  },
+  async ({ repo, limit = 10, pages = 3 }) => {
+    try {
+      const { repo: normalized, closeCounts } = await fetchLeaderboardData(
+        repo,
+        pages
+      );
+
+      const leaderboard = Array.from(closeCounts.entries())
+        .map(([login, { count, avatarUrl }]) => ({
+          rank: 0,
+          login,
+          avatarUrl: avatarUrl ?? undefined,
+          closedCount: count,
+        }))
+        .sort((a, b) => b.closedCount - a.closedCount)
+        .slice(0, limit)
+        .map((row, i) => ({ ...row, rank: i + 1 }));
+
+      const result = {
+        repo: normalized,
+        leaderboard,
+        totalContributors: closeCounts.size,
+      };
+
+      return widget({
+        props: result,
+        output: text(
+          `Leaderboard for ${normalized}: ${leaderboard
+            .map((r) => `${r.rank}. ${r.login} (${r.closedCount})`)
+            .join(", ")}`
+        ),
+      });
+    } catch (err) {
+      console.error("get-repo-issues-leaderboard failed:", err);
+      return error(
+        `Failed to fetch leaderboard: ${err instanceof Error ? err.message : "Unknown"}`
+      );
+    }
   }
 );
 
