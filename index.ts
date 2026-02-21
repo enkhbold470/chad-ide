@@ -1,12 +1,13 @@
 import { MCPServer, object, text, widget } from "mcp-use/server";
 import { z } from "zod";
 
+const baseUrl = process.env.MCP_URL || "http://localhost:3000";
 const server = new MCPServer({
   name: "my-widget-server",
   title: "my-widget-server", // display name
   version: "1.0.0",
   description: "MCP server with MCP Apps integration",
-  baseUrl: process.env.MCP_URL || "http://localhost:3000", // Full base URL (e.g., https://myserver.com)
+  baseUrl, // Full base URL (e.g., https://myserver.com)
   favicon: "favicon.ico",
   websiteUrl: "https://mcp-use.com", // Can be customized later
   icons: [
@@ -71,6 +72,73 @@ server.tool(
       output: text(
         `Found ${results.length} fruits matching "${query ?? "all"}"`
       ),
+    });
+  }
+);
+
+/**
+ * Slot machine tool — spin and win. Odds improve with total contribution.
+ */
+const SLOT_SYMBOLS = fruits.map((f) => f.fruit);
+const BASE_WIN_CHANCE = 0.08; // 8% base chance for 3-of-a-kind
+const MAX_CONTRIBUTION_BONUS = 0.22; // up to 22% bonus → 30% max win chance
+const CONTRIBUTION_SCALE = 5000; // contribution / 5000 = bonus (capped)
+
+server.tool(
+  {
+    name: "slot-machine-spin",
+    description:
+      "Spin the slot machine. Returns 3 reel symbols. Winning chance (3 matching symbols) increases with total contribution.",
+    schema: z.object({
+      totalContribution: z
+        .number()
+        .min(0)
+        .optional()
+        .describe(
+          "Total contribution score for the person. Higher values improve win odds. Omit for base odds."
+        ),
+    }),
+    widget: {
+      name: "slot-machine-result",
+      invoking: "Spinning...",
+      invoked: "Spin complete",
+    },
+  },
+  async ({ totalContribution = 0 }) => {
+    const contributionBonus = Math.min(
+      totalContribution / CONTRIBUTION_SCALE,
+      MAX_CONTRIBUTION_BONUS
+    );
+    const winChance = BASE_WIN_CHANCE + contributionBonus;
+
+    const willForceWin = Math.random() < winChance;
+    const reel1: string =
+      SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    const reel2 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    const reel3 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+
+    const won = reel1 === reel2 && reel2 === reel3;
+
+    const imageUrl = (fruit: string) =>
+      `${baseUrl.replace(/\/$/, "")}/fruits/${fruit}.png`;
+
+    const reels = [reel1, reel2, reel3];
+    const reelImages = [imageUrl(reel1), imageUrl(reel2), imageUrl(reel3)];
+    const message = won
+      ? `🎰 Jackpot! ${reel1} ${reel1} ${reel1} — You won!`
+      : `🎰 ${reel1} | ${reel2} | ${reel3} — Try again!`;
+
+    return widget({
+      props: {
+        reels,
+        reelImages,
+        symbols: SLOT_SYMBOLS,
+        won,
+        totalContribution,
+        winChanceUsed: winChance,
+        message,
+      },
+      output: text(message),
     });
   }
 );
