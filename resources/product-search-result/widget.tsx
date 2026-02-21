@@ -2,7 +2,6 @@ import { AppsSDKUIProvider } from "@openai/apps-sdk-ui/components/AppsSDKUIProvi
 import {
   Image,
   McpUseProvider,
-  useCallTool,
   useWidget,
   type WidgetMetadata,
 } from "mcp-use/react";
@@ -44,21 +43,11 @@ const ProductSearchResult: React.FC = () => {
     isPending,
     displayMode,
     requestDisplayMode,
-    sendFollowUpMessage,
     locale,
     state,
     setState,
   } = useWidget<ProductSearchResultProps, FavoritesState>();
 
-  const {
-    callTool: getFruitDetails,
-    data: fruitDetails,
-    isPending: isLoadingDetails,
-  } = useCallTool("get-fruit-details");
-
-  const selectedFruit = fruitDetails?.structuredContent as
-    | { fruit: string; facts?: string[] }
-    | undefined;
   const favorites = state?.favorites ?? [];
 
   const toggleFavorite = useCallback(
@@ -188,7 +177,7 @@ const ProductSearchResult: React.FC = () => {
             <p className="text-md text-secondary">
               {query
                 ? `Showing results for "${query}"`
-                : "Tap a fruit to see details"}
+                : "Browse fruits"}
             </p>
           </div>
 
@@ -196,87 +185,9 @@ const ProductSearchResult: React.FC = () => {
           <Carousel
             results={results}
             favorites={favorites}
-            onSelectFruit={(fruit: string) => getFruitDetails({ fruit })}
+            onSelectFruit={() => {}}
             onToggleFavorite={toggleFavorite}
           />
-
-          {/* Detail view */}
-          {selectedFruit && (
-            <div className="mx-8 my-6 rounded-2xl border border-default bg-surface p-5 flex items-center gap-6">
-              <div
-                className={`rounded-xl p-4 shrink-0 ${
-                  results.find(
-                    (r: { fruit: string }) => r.fruit === selectedFruit.fruit
-                  )?.color ?? ""
-                }`}
-              >
-                <Image
-                  src={`/fruits/${selectedFruit.fruit}.png`}
-                  alt={selectedFruit.fruit}
-                  className="w-24 h-24 object-contain"
-                />
-              </div>
-              <div className="flex-1">
-                {isLoadingDetails ? (
-                  <div className="animate-pulse h-4 w-32 bg-surface-elevated rounded" />
-                ) : (
-                  <>
-                    <div className="flex items-center gap-2 mb-2">
-                      <h3 className="font-semibold text-lg capitalize">
-                        {selectedFruit.fruit}
-                      </h3>
-                      <Button
-                        color="secondary"
-                        pill
-                        size="md"
-                        uniform
-                        variant="ghost"
-                        onClick={() => toggleFavorite(selectedFruit.fruit)}
-                        title={
-                          favorites.includes(selectedFruit.fruit)
-                            ? "Remove from favorites"
-                            : "Add to favorites"
-                        }
-                        className={
-                          favorites.includes(selectedFruit.fruit)
-                            ? "text-danger/80"
-                            : "text-secondary"
-                        }
-                      >
-                        {favorites.includes(selectedFruit.fruit) ? (
-                          <HeartFilled />
-                        ) : (
-                          <HeartXs />
-                        )}
-                      </Button>
-                    </div>
-                    <ul className="space-y-1">
-                      {(selectedFruit.facts ?? []).map((fact: string) => (
-                        <li
-                          key={fact}
-                          className="text-sm text-secondary flex items-start gap-2"
-                        >
-                          <span className="text-info mt-0.5">•</span>
-                          {fact}
-                        </li>
-                      ))}
-                    </ul>
-                    {/* Follow-up message demo — sends a message to the LLM from the widget */}
-                    <button
-                      onClick={() =>
-                        sendFollowUpMessage(
-                          `Tell me more interesting facts about ${selectedFruit.fruit}`
-                        )
-                      }
-                      className="mt-3 px-3 py-1.5 text-xs font-medium rounded-lg bg-info/10 text-info hover:bg-info/20 transition-colors cursor-pointer"
-                    >
-                      Ask the AI for more about {selectedFruit.fruit}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
 
           <Accordion items={accordionItems} />
         </div>
