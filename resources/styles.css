@@ -115,3 +115,18 @@ a {
   z-index: 3;
   transform: translateZ(0);
 }
+
+/* Slot machine reel spin */
+@keyframes slot-reel-spin {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(var(--reel-stop, 0));
+  }
+}
+
+.slot-reel-strip.spinning {
+  animation: slot-reel-spin 2.2s cubic-bezier(0.15, 0.85, 0.25, 1) forwards;
+  will-change: transform;
+}
