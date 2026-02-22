@@ -85,6 +85,17 @@ const MAX_CONTRIBUTION_BONUS = 0.25; // up to 25% bonus → 30% max win chance
 const CONTRIBUTION_PER_ISSUE = 100; // each closed issue = 100 contribution points
 const CONTRIBUTION_SCALE = 5000; // 50 issues closed ≈ max bonus
 
+/** Per-session spin cache: repo:username → last spin + win rate. Persists across tool calls in chat session. */
+const spinSessionCache = new Map<
+  string,
+  { reels: string[]; won: boolean; winChancePercent: string; wins: number; spins: number }
+>();
+
+function getSpinSessionKey(repo: string, username: string) {
+  const n = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
+  return `${n}:${username}`;
+}
+
 server.tool(
   {
     name: "slot-machine-spin",
@@ -103,137 +114,37 @@ server.tool(
         ),
     }),
     widget: {
-      name: "slot-machine-result",
+      name: "repo-dashboard",
       invoking: "Spinning...",
       invoked: "Spin complete",
     },
   },
   async ({ repo, githubUsername }) => {
-    let issuesClosed = 0;
-    try {
-      const { closeCounts } = await fetchLeaderboardData(repo);
-      const user = closeCounts.get(githubUsername);
-      issuesClosed = user?.count ?? 0;
-    } catch {
-      // Fall back to base odds if leaderboard fetch fails
-    }
-
-    const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
-    const contributionBonus = Math.min(
-      contribution / CONTRIBUTION_SCALE,
-      MAX_CONTRIBUTION_BONUS
-    );
-    const winChance = BASE_WIN_CHANCE + contributionBonus;
-
-    const willForceWin = Math.random() < winChance;
-    const reel1: string =
-      SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-    const reel2 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-    const reel3 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-
-    const won = reel1 === reel2 && reel2 === reel3;
-
-    const imageUrl = (fruit: string) =>
-      `${baseUrl.replace(/\/$/, "")}/fruits/${fruit}.png`;
-
-    const reels = [reel1, reel2, reel3];
-    const reelImages = [imageUrl(reel1), imageUrl(reel2), imageUrl(reel3)];
-    const message = won
-      ? `🎰 Jackpot! ${reel1} ${reel1} ${reel1} — You won!`
-      : `🎰 ${reel1} | ${reel2} | ${reel3} — Try again!`;
-
-    return widget({
-      props: {
-        reels,
-        reelImages,
-        symbols: SLOT_SYMBOLS,
-        won,
-        issuesClosed,
-        winChanceUsed: winChance,
-        message,
-      },
-      output: text(message),
-    });
-  }
-);
-
-/**
- * Fetch a public GitHub repo's issue list.
- */
-server.tool(
-  {
-    name: "get-repo-issues",
-    description:
-      "Get the list of issues from a public GitHub repository. Use owner/repo format (e.g. facebook/react).",
-    schema: z.object({
-      repo: z
-        .string()
-        .describe(
-          "Repository in owner/repo format (e.g. facebook/react, vercel/next.js)"
-        ),
-      state: z
-        .enum(["open", "closed", "all"])
-        .optional()
-        .describe("Filter by issue state. Default: open"),
-      limit: z
-        .number()
-        .min(1)
-        .max(100)
-        .optional()
-        .describe("Max number of issues to return. Default: 30"),
-      githubUsername: z
-        .string()
-        .optional()
-        .describe(
-          "GitHub username of the viewer. Used to show their next spin win chance (5% base + bonus per issue closed)."
-        ),
-    }),
-    annotations: { openWorldHint: true },
-    widget: {
-      name: "repo-issues-todo",
-      invoking: "Fetching issues...",
-      invoked: "Issues loaded",
-    },
-  },
-  async ({ repo, state = "open", limit = 30, githubUsername }) => {
+    console.log("[slot-machine-spin] Called with", { repo, githubUsername });
     const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
     const [owner, name] = normalized.split("/");
     if (!owner || !name) {
       return error("Invalid repo format. Use owner/repo (e.g. facebook/react)");
     }
 
-    try {
-      const params = new URLSearchParams({
-        state,
-        per_page: String(Math.min(limit, 100)),
-        page: "1",
-      });
-      const headers: Record<string, string> = {
-        Accept: "application/vnd.github.v3+json",
-        "User-Agent": "mcp-widget-server",
-      };
-      const token = process.env.GITHUB_TOKEN;
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
-      const res = await fetch(
-        `https://api.github.com/repos/${owner}/${name}/issues?${params}`,
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github.v3+json",
+      "User-Agent": "mcp-widget-server",
+    };
+    const token = process.env.GITHUB_TOKEN;
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    const [issuesRes, { closeCounts }] = await Promise.all([
+      fetch(
+        `https://api.github.com/repos/${owner}/${name}/issues?state=open&per_page=30&page=1`,
         { headers }
-      );
+      ),
+      fetchLeaderboardData(repo),
+    ]);
 
-      if (!res.ok) {
-        if (res.status === 404) {
-          return error(`Repository not found: ${repo}`);
-        }
-        if (res.status === 403) {
-          return error(
-            "GitHub API rate limit exceeded. Try again later or use a GitHub token."
-          );
-        }
-        return error(`GitHub API error: ${res.status} ${res.statusText}`);
-      }
-
-      const data = (await res.json()) as Array<{
+    let issues: Array<{ number: number; title: string; state: string; url: string; author: string; createdAt: string }> = [];
+    if (issuesRes.ok) {
+      const issuesData = (await issuesRes.json()) as Array<{
         pull_request?: unknown;
         number: number;
         title: string;
@@ -242,9 +153,9 @@ server.tool(
         user?: { login: string };
         created_at: string;
       }>;
-      const issues = data
+      issues = issuesData
         .filter((item) => !item.pull_request)
-        .slice(0, limit)
+        .slice(0, 30)
         .map((item) => ({
           number: item.number,
           title: item.title,
@@ -253,45 +164,129 @@ server.tool(
           author: item.user?.login ?? "unknown",
           createdAt: item.created_at,
         }));
+    }
 
-      let issuesClosed = 0;
-      if (githubUsername) {
-        try {
-          const { closeCounts } = await fetchLeaderboardData(repo);
-          issuesClosed = closeCounts.get(githubUsername)?.count ?? 0;
-        } catch {
-          // Use base odds if leaderboard fetch fails
-        }
-      }
+    const leaderboard = Array.from(closeCounts.entries())
+      .map(([login, { count, avatarUrl }]) => ({
+        rank: 0,
+        login,
+        avatarUrl: avatarUrl ?? undefined,
+        closedCount: count,
+      }))
+      .sort((a, b) => b.closedCount - a.closedCount)
+      .slice(0, 10)
+      .map((row, i) => ({ ...row, rank: i + 1 }));
 
-      const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
-      const contributionBonus = Math.min(
-        contribution / CONTRIBUTION_SCALE,
-        MAX_CONTRIBUTION_BONUS
-      );
-      const winChancePercent = (
-        (BASE_WIN_CHANCE + contributionBonus) *
-        100
-      ).toFixed(1);
+    const issuesClosed = closeCounts.get(githubUsername)?.count ?? 0;
+    const maxSpins = issuesClosed;
+    const sessionKey = getSpinSessionKey(normalized, githubUsername);
+    const spinsUsed = spinSessionCache.get(sessionKey)?.spins ?? 0;
 
+    if (spinsUsed >= maxSpins) {
+      const leaderboard = Array.from(closeCounts.entries())
+        .map(([login, { count, avatarUrl }]) => ({
+          rank: 0,
+          login,
+          avatarUrl: avatarUrl ?? undefined,
+          closedCount: count,
+        }))
+        .sort((a, b) => b.closedCount - a.closedCount)
+        .slice(0, 10)
+        .map((row, i) => ({ ...row, rank: i + 1 }));
+      const contrib = issuesClosed * CONTRIBUTION_PER_ISSUE;
+      const bonus = Math.min(contrib / CONTRIBUTION_SCALE, MAX_CONTRIBUTION_BONUS);
+      const winChancePercent = `${((BASE_WIN_CHANCE + bonus) * 100).toFixed(1)}%`;
+      const cached = spinSessionCache.get(sessionKey);
+      const sessionWinRate = cached
+        ? `${cached.wins}/${cached.spins} (${((cached.wins / cached.spins) * 100).toFixed(0)}%)`
+        : undefined;
       return widget({
         props: {
           repo: normalized,
-          state,
+          state: "open",
           issues,
-          count: issues.length,
-          winChancePercent: githubUsername ? `${winChancePercent}%` : undefined,
+          winChancePercent,
+          leaderboard,
+          totalContributors: closeCounts.size,
+          spinsRemaining: 0,
+          maxSpins: issuesClosed,
+          spinLimitReached: true,
+          githubUsername,
+          ...(cached && {
+            slotReels: cached.reels,
+            slotSymbols: SLOT_SYMBOLS,
+            slotWon: cached.won,
+            slotSpinComplete: true,
+            sessionWinRate,
+          }),
         },
         output: text(
-          `Found ${issues.length} ${state} issues in ${normalized}`
+          `No spins left. You've used all ${maxSpins} spins (1 per issue closed). Close more issues to spin again!`
         ),
       });
-    } catch (err) {
-      console.error("get-repo-issues failed:", err);
-      return error(
-        `Failed to fetch issues: ${err instanceof Error ? err.message : "Unknown error"}`
-      );
     }
+
+    const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
+    const contributionBonus = Math.min(
+      contribution / CONTRIBUTION_SCALE,
+      MAX_CONTRIBUTION_BONUS
+    );
+    const winChance = BASE_WIN_CHANCE + contributionBonus;
+    const winChancePercent = `${(winChance * 100).toFixed(1)}%`;
+
+    const willForceWin = Math.random() < winChance;
+    const existing = spinSessionCache.get(sessionKey);
+    console.log("[slot-machine-spin] Executing spin", {
+      issuesClosed,
+      maxSpins,
+      winChancePercent,
+      spinsUsed: existing?.spins ?? 0,
+    });
+    const reel1: string =
+      SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    const reel2 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    const reel3 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
+    const won = reel1 === reel2 && reel2 === reel3;
+    const reels = [reel1, reel2, reel3];
+
+    const message = won
+      ? `🎰 Jackpot! ${reel1} ${reel1} ${reel1} — You won!`
+      : `🎰 ${reel1} | ${reel2} | ${reel3} — Try again!`;
+    const wins = (existing?.wins ?? 0) + (won ? 1 : 0);
+    const spins = (existing?.spins ?? 0) + 1;
+    spinSessionCache.set(sessionKey, {
+      reels,
+      won,
+      winChancePercent,
+      wins,
+      spins,
+    });
+
+    const sessionWinRate = `${wins}/${spins} (${((wins / spins) * 100).toFixed(0)}%)`;
+    const spinsRemaining = maxSpins - spins;
+
+    console.log("[slot-machine-spin] Spin complete", { reels, won, spinsRemaining, sessionWinRate });
+
+    return widget({
+      props: {
+        repo: normalized,
+        state: "open",
+        issues,
+        winChancePercent,
+        leaderboard,
+        totalContributors: closeCounts.size,
+        slotReels: reels,
+        slotSymbols: SLOT_SYMBOLS,
+        slotWon: won,
+        slotSpinComplete: true,
+        sessionWinRate,
+        spinsRemaining,
+        maxSpins,
+        spinLimitReached: spinsRemaining <= 0,
+        githubUsername,
+      },
+      output: text(message),
+    });
   }
 );
 
@@ -370,49 +365,82 @@ async function fetchLeaderboardData(repo: string, pages = 3): Promise<{
 }
 
 /**
- * Leaderboard: who closed the most issues in a repo.
- * Uses GitHub issue events API (closed events).
- * Cached for 24h; re-fetches daily. Cumulative counts never reset.
+ * Combined dashboard: issues + leaderboard + slot CTA in one horizontally scrollable widget.
+ * Does NOT call slot-machine-spin — the user pulls the lever in the widget, which triggers that tool.
  */
 server.tool(
   {
-    name: "get-repo-issues-leaderboard",
+    name: "get-repo-dashboard",
     description:
-      "Get a leaderboard of who closed the most issues in a public GitHub repository. Uses owner/repo format.",
+      "Get a combined dashboard for a GitHub repo: issues, leaderboard, and slot machine info. Scroll horizontally between panels. Dots show which panel you're viewing.",
     schema: z.object({
       repo: z
         .string()
-        .describe(
-          "Repository in owner/repo format (e.g. facebook/react, enkhbold470/chad-ide)"
-        ),
-      limit: z
-        .number()
-        .min(1)
-        .max(50)
-        .optional()
-        .describe("Max number of top contributors to return. Default: 10"),
-      pages: z
-        .number()
-        .min(1)
-        .max(5)
-        .optional()
-        .describe(
-          "Number of event pages to fetch (100 events per page). More = more history. Default: 2"
-        ),
+        .describe("Repository in owner/repo format (e.g. enkhbold470/chad-ide)"),
+      githubUsername: z
+        .string()
+        .describe("GitHub username (required). Needed for slot machine, win chance, and spins."),
+      state: z.enum(["open", "closed", "all"]).optional().describe("Issue filter. Default: open"),
+      limit: z.number().min(1).max(100).optional().describe("Max issues. Default: 30"),
     }),
     annotations: { openWorldHint: true },
     widget: {
-      name: "repo-issues-leaderboard",
-      invoking: "Fetching leaderboard...",
-      invoked: "Leaderboard loaded",
+      name: "repo-dashboard",
+      invoking: "Loading dashboard...",
+      invoked: "Dashboard loaded",
     },
   },
-  async ({ repo, limit = 10, pages = 3 }) => {
+  async ({ repo, githubUsername, state = "open", limit = 30 }) => {
+    console.log("[get-repo-dashboard] Called with", { repo, githubUsername, state, limit });
+    const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
+    const [owner, name] = normalized.split("/");
+    if (!owner || !name) {
+      return error("Invalid repo format. Use owner/repo (e.g. facebook/react)");
+    }
+
     try {
-      const { repo: normalized, closeCounts } = await fetchLeaderboardData(
-        repo,
-        pages
-      );
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "mcp-widget-server",
+      };
+      const token = process.env.GITHUB_TOKEN;
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      const [issuesRes, { closeCounts }] = await Promise.all([
+        fetch(
+          `https://api.github.com/repos/${owner}/${name}/issues?state=${state}&per_page=${Math.min(limit, 100)}&page=1`,
+          { headers }
+        ),
+        fetchLeaderboardData(repo),
+      ]);
+
+      if (!issuesRes.ok) {
+        if (issuesRes.status === 404) return error(`Repository not found: ${repo}`);
+        if (issuesRes.status === 403)
+          return error("GitHub API rate limit exceeded. Use GITHUB_TOKEN for higher limits.");
+        return error(`GitHub API error: ${issuesRes.status} ${issuesRes.statusText}`);
+      }
+
+      const issuesData = (await issuesRes.json()) as Array<{
+        pull_request?: unknown;
+        number: number;
+        title: string;
+        state: string;
+        html_url: string;
+        user?: { login: string };
+        created_at: string;
+      }>;
+      const issues = issuesData
+        .filter((item) => !item.pull_request)
+        .slice(0, limit)
+        .map((item) => ({
+          number: item.number,
+          title: item.title,
+          state: item.state,
+          url: item.html_url,
+          author: item.user?.login ?? "unknown",
+          createdAt: item.created_at,
+        }));
 
       const leaderboard = Array.from(closeCounts.entries())
         .map(([login, { count, avatarUrl }]) => ({
@@ -422,27 +450,60 @@ server.tool(
           closedCount: count,
         }))
         .sort((a, b) => b.closedCount - a.closedCount)
-        .slice(0, limit)
+        .slice(0, 10)
         .map((row, i) => ({ ...row, rank: i + 1 }));
 
-      const result = {
+      let winChancePercent: string | undefined;
+      if (githubUsername) {
+        const issuesClosed = closeCounts.get(githubUsername)?.count ?? 0;
+        const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
+        const bonus = Math.min(contribution / CONTRIBUTION_SCALE, MAX_CONTRIBUTION_BONUS);
+        winChancePercent = `${((BASE_WIN_CHANCE + bonus) * 100).toFixed(1)}%`;
+      }
+
+      const sessionKey = githubUsername ? getSpinSessionKey(normalized, githubUsername) : null;
+      const cachedSpin = sessionKey ? spinSessionCache.get(sessionKey) : null;
+      const issuesClosed = githubUsername ? closeCounts.get(githubUsername)?.count ?? 0 : 0;
+      const maxSpins = issuesClosed;
+      const spinsRemaining = cachedSpin ? Math.max(0, maxSpins - cachedSpin.spins) : maxSpins;
+      const sessionWinRate = cachedSpin
+        ? `${cachedSpin.wins}/${cachedSpin.spins} (${((cachedSpin.wins / cachedSpin.spins) * 100).toFixed(0)}%)`
+        : undefined;
+
+      console.log("[get-repo-dashboard] Returning widget props", {
         repo: normalized,
-        leaderboard,
-        totalContributors: closeCounts.size,
-      };
+        githubUsername,
+        issuesClosed,
+        maxSpins,
+        spinsRemaining,
+        spinLimitReached: spinsRemaining <= 0,
+        hasCachedSpin: !!cachedSpin,
+      });
 
       return widget({
-        props: result,
-        output: text(
-          `Leaderboard for ${normalized}: ${leaderboard
-            .map((r) => `${r.rank}. ${r.login} (${r.closedCount})`)
-            .join(", ")}`
-        ),
+        props: {
+          repo: normalized,
+          state,
+          issues,
+          winChancePercent,
+          leaderboard,
+          totalContributors: closeCounts.size,
+          ...(githubUsername && { spinsRemaining, maxSpins, spinLimitReached: spinsRemaining <= 0 }),
+          ...(githubUsername && { githubUsername }),
+          ...(cachedSpin && {
+            slotReels: cachedSpin.reels,
+            slotSymbols: SLOT_SYMBOLS,
+            slotWon: cachedSpin.won,
+            slotSpinComplete: true,
+            sessionWinRate,
+          }),
+        },
+        output: text(`Dashboard for ${normalized}: ${issues.length} issues, ${closeCounts.size} contributors`),
       });
     } catch (err) {
-      console.error("get-repo-issues-leaderboard failed:", err);
+      console.error("get-repo-dashboard failed:", err);
       return error(
-        `Failed to fetch leaderboard: ${err instanceof Error ? err.message : "Unknown"}`
+        `Failed to load dashboard: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     }
   }
