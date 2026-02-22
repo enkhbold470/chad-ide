@@ -1,11 +1,10 @@
 # Chad IDE — Tool Workflow
 
-## Tools (3)
+## Tools (2)
 
 | Tool | Purpose |
 |------|---------|
-| **get-repo-dashboard** | Main entry point. Shows issues + leaderboard + slot machine in one scrollable view. Requires repo + githubUsername. |
-| **slot-machine-spin** | Action: spin the slots. Win chance from issues closed; spins = 1 per issue closed. |
+| **get-repo-dashboard** | One tool only. Shows issues + leaderboard + slot. When user pulls lever, widget calls same tool with `spin: true`. |
 | **search-tools** | Fruit search demo (unrelated to GitHub flow). |
 
 ---
@@ -20,10 +19,9 @@
      • Panel 2: Leaderboard (who closed the most)
      • Panel 3: Slot machine — spins left, win chance, PULL LEVER
 
-2. User pulls the lever (or asks to spin)
-   → Widget calls slot-machine-spin(repo, githubUsername) via useCallTool
-   → Spin runs: reels, win/lose, session win rate updated
-   → Same dashboard returns with new spin result
+2. User pulls the lever
+   → Client-side: widget picks outcome (Math.random < winChance), runs spinning animation
+   → After animation: widget calls get-repo-dashboard with recordSpin to persist
 
 3. Repeat until spins run out
    → "Close more issues to spin again"

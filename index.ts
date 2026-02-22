@@ -77,7 +77,7 @@ server.tool(
 );
 
 /**
- * Slot machine tool — spin and win. Odds improve with issues closed in the repo.
+ * Slot machine constants — odds improve with issues closed in the repo.
  */
 const SLOT_SYMBOLS = fruits.map((f) => f.fruit);
 const BASE_WIN_CHANCE = 0.05; // 5% base chance for 3-of-a-kind
@@ -95,200 +95,6 @@ function getSpinSessionKey(repo: string, username: string) {
   const n = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
   return `${n}:${username}`;
 }
-
-server.tool(
-  {
-    name: "slot-machine-spin",
-    description:
-      "Spin the slot machine. Winning chance is based on how many issues the user has closed in the repo. Provide repo and GitHub username to look up their count automatically.",
-    schema: z.object({
-      repo: z
-        .string()
-        .describe(
-          "Repository in owner/repo format (e.g. facebook/react). Used to look up user's closed-issue count."
-        ),
-      githubUsername: z
-        .string()
-        .describe(
-          "The GitHub username of the person spinning. Their closed-issue count in the repo determines win chance."
-        ),
-    }),
-    widget: {
-      name: "repo-dashboard",
-      invoking: "Spinning...",
-      invoked: "Spin complete",
-    },
-  },
-  async ({ repo, githubUsername }) => {
-    console.log("[slot-machine-spin] Called with", { repo, githubUsername });
-    const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
-    const [owner, name] = normalized.split("/");
-    if (!owner || !name) {
-      return error("Invalid repo format. Use owner/repo (e.g. facebook/react)");
-    }
-
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github.v3+json",
-      "User-Agent": "mcp-widget-server",
-    };
-    const token = process.env.GITHUB_TOKEN;
-    if (token) headers.Authorization = `Bearer ${token}`;
-
-    const [issuesRes, { closeCounts }] = await Promise.all([
-      fetch(
-        `https://api.github.com/repos/${owner}/${name}/issues?state=open&per_page=30&page=1`,
-        { headers }
-      ),
-      fetchLeaderboardData(repo),
-    ]);
-
-    let issues: Array<{ number: number; title: string; state: string; url: string; author: string; createdAt: string }> = [];
-    if (issuesRes.ok) {
-      const issuesData = (await issuesRes.json()) as Array<{
-        pull_request?: unknown;
-        number: number;
-        title: string;
-        state: string;
-        html_url: string;
-        user?: { login: string };
-        created_at: string;
-      }>;
-      issues = issuesData
-        .filter((item) => !item.pull_request)
-        .slice(0, 30)
-        .map((item) => ({
-          number: item.number,
-          title: item.title,
-          state: item.state,
-          url: item.html_url,
-          author: item.user?.login ?? "unknown",
-          createdAt: item.created_at,
-        }));
-    }
-
-    const leaderboard = Array.from(closeCounts.entries())
-      .map(([login, { count, avatarUrl }]) => ({
-        rank: 0,
-        login,
-        avatarUrl: avatarUrl ?? undefined,
-        closedCount: count,
-      }))
-      .sort((a, b) => b.closedCount - a.closedCount)
-      .slice(0, 10)
-      .map((row, i) => ({ ...row, rank: i + 1 }));
-
-    const issuesClosed = closeCounts.get(githubUsername)?.count ?? 0;
-    const maxSpins = issuesClosed;
-    const sessionKey = getSpinSessionKey(normalized, githubUsername);
-    const spinsUsed = spinSessionCache.get(sessionKey)?.spins ?? 0;
-
-    if (spinsUsed >= maxSpins) {
-      const leaderboard = Array.from(closeCounts.entries())
-        .map(([login, { count, avatarUrl }]) => ({
-          rank: 0,
-          login,
-          avatarUrl: avatarUrl ?? undefined,
-          closedCount: count,
-        }))
-        .sort((a, b) => b.closedCount - a.closedCount)
-        .slice(0, 10)
-        .map((row, i) => ({ ...row, rank: i + 1 }));
-      const contrib = issuesClosed * CONTRIBUTION_PER_ISSUE;
-      const bonus = Math.min(contrib / CONTRIBUTION_SCALE, MAX_CONTRIBUTION_BONUS);
-      const winChancePercent = `${((BASE_WIN_CHANCE + bonus) * 100).toFixed(1)}%`;
-      const cached = spinSessionCache.get(sessionKey);
-      const sessionWinRate = cached
-        ? `${cached.wins}/${cached.spins} (${((cached.wins / cached.spins) * 100).toFixed(0)}%)`
-        : undefined;
-      return widget({
-        props: {
-          repo: normalized,
-          state: "open",
-          issues,
-          winChancePercent,
-          leaderboard,
-          totalContributors: closeCounts.size,
-          spinsRemaining: 0,
-          maxSpins: issuesClosed,
-          spinLimitReached: true,
-          githubUsername,
-          ...(cached && {
-            slotReels: cached.reels,
-            slotSymbols: SLOT_SYMBOLS,
-            slotWon: cached.won,
-            slotSpinComplete: true,
-            sessionWinRate,
-          }),
-        },
-        output: text(
-          `No spins left. You've used all ${maxSpins} spins (1 per issue closed). Close more issues to spin again!`
-        ),
-      });
-    }
-
-    const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
-    const contributionBonus = Math.min(
-      contribution / CONTRIBUTION_SCALE,
-      MAX_CONTRIBUTION_BONUS
-    );
-    const winChance = BASE_WIN_CHANCE + contributionBonus;
-    const winChancePercent = `${(winChance * 100).toFixed(1)}%`;
-
-    const willForceWin = Math.random() < winChance;
-    const existing = spinSessionCache.get(sessionKey);
-    console.log("[slot-machine-spin] Executing spin", {
-      issuesClosed,
-      maxSpins,
-      winChancePercent,
-      spinsUsed: existing?.spins ?? 0,
-    });
-    const reel1: string =
-      SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-    const reel2 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-    const reel3 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-    const won = reel1 === reel2 && reel2 === reel3;
-    const reels = [reel1, reel2, reel3];
-
-    const message = won
-      ? `🎰 Jackpot! ${reel1} ${reel1} ${reel1} — You won!`
-      : `🎰 ${reel1} | ${reel2} | ${reel3} — Try again!`;
-    const wins = (existing?.wins ?? 0) + (won ? 1 : 0);
-    const spins = (existing?.spins ?? 0) + 1;
-    spinSessionCache.set(sessionKey, {
-      reels,
-      won,
-      winChancePercent,
-      wins,
-      spins,
-    });
-
-    const sessionWinRate = `${wins}/${spins} (${((wins / spins) * 100).toFixed(0)}%)`;
-    const spinsRemaining = maxSpins - spins;
-
-    console.log("[slot-machine-spin] Spin complete", { reels, won, spinsRemaining, sessionWinRate });
-
-    return widget({
-      props: {
-        repo: normalized,
-        state: "open",
-        issues,
-        winChancePercent,
-        leaderboard,
-        totalContributors: closeCounts.size,
-        slotReels: reels,
-        slotSymbols: SLOT_SYMBOLS,
-        slotWon: won,
-        slotSpinComplete: true,
-        sessionWinRate,
-        spinsRemaining,
-        maxSpins,
-        spinLimitReached: spinsRemaining <= 0,
-        githubUsername,
-      },
-      output: text(message),
-    });
-  }
-);
 
 /** Leaderboard cache: 24h TTL. Stores full closeCounts per repo. */
 const leaderboardCache = new Map<
@@ -365,8 +171,9 @@ async function fetchLeaderboardData(repo: string, pages = 3): Promise<{
 }
 
 /**
- * Combined dashboard: issues + leaderboard + slot CTA in one horizontally scrollable widget.
- * Does NOT call slot-machine-spin — the user pulls the lever in the widget, which triggers that tool.
+ * Combined dashboard: issues + leaderboard + slot machine. One tool only.
+ * Spinning is client-side: user pulls lever, widget runs animation and picks outcome,
+ * then calls with recordSpin to persist. Server never executes a spin.
  */
 server.tool(
   {
@@ -380,8 +187,12 @@ server.tool(
       githubUsername: z
         .string()
         .describe("GitHub username (required). Needed for slot machine, win chance, and spins."),
-      state: z.enum(["open", "closed", "all"]).optional().describe("Issue filter. Default: open"),
+      state: z.enum(["open", "closed", "all"]).optional().describe("Issue filter. Default: all (show both open and closed from repo)."),
       limit: z.number().min(1).max(100).optional().describe("Max issues. Default: 30"),
+      recordSpin: z.object({
+        reels: z.array(z.string()).length(3),
+        won: z.boolean(),
+      }).optional().describe("Client sends spin outcome after user pulls lever. Server records it and returns updated dashboard."),
     }),
     annotations: { openWorldHint: true },
     widget: {
@@ -390,8 +201,8 @@ server.tool(
       invoked: "Dashboard loaded",
     },
   },
-  async ({ repo, githubUsername, state = "open", limit = 30 }) => {
-    console.log("[get-repo-dashboard] Called with", { repo, githubUsername, state, limit });
+  async ({ repo, githubUsername, state = "all", limit = 30, recordSpin }) => {
+    console.log("[get-repo-dashboard] Called with", { repo, githubUsername, state, limit, recordSpin });
     const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
     const [owner, name] = normalized.split("/");
     if (!owner || !name) {
@@ -454,17 +265,38 @@ server.tool(
         .map((row, i) => ({ ...row, rank: i + 1 }));
 
       let winChancePercent: string | undefined;
+      let winChanceDecimal: number | undefined;
+      const issuesClosed = githubUsername ? closeCounts.get(githubUsername)?.count ?? 0 : 0;
       if (githubUsername) {
-        const issuesClosed = closeCounts.get(githubUsername)?.count ?? 0;
         const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
         const bonus = Math.min(contribution / CONTRIBUTION_SCALE, MAX_CONTRIBUTION_BONUS);
-        winChancePercent = `${((BASE_WIN_CHANCE + bonus) * 100).toFixed(1)}%`;
+        winChanceDecimal = BASE_WIN_CHANCE + bonus;
+        winChancePercent = `${(winChanceDecimal * 100).toFixed(1)}%`;
       }
 
       const sessionKey = githubUsername ? getSpinSessionKey(normalized, githubUsername) : null;
-      const cachedSpin = sessionKey ? spinSessionCache.get(sessionKey) : null;
-      const issuesClosed = githubUsername ? closeCounts.get(githubUsername)?.count ?? 0 : 0;
+      let cachedSpin = sessionKey ? spinSessionCache.get(sessionKey) : null;
       const maxSpins = issuesClosed;
+
+      // Record client-side spin outcome (no server-side spin execution)
+      if (recordSpin && githubUsername && sessionKey) {
+        const spinsUsed = cachedSpin?.spins ?? 0;
+        if (spinsUsed < maxSpins) {
+          const existing = spinSessionCache.get(sessionKey);
+          const wins = (existing?.wins ?? 0) + (recordSpin.won ? 1 : 0);
+          const spins = (existing?.spins ?? 0) + 1;
+          cachedSpin = {
+            reels: recordSpin.reels,
+            won: recordSpin.won,
+            winChancePercent: winChancePercent ?? "5%",
+            wins,
+            spins,
+          };
+          spinSessionCache.set(sessionKey, cachedSpin);
+          console.log("[get-repo-dashboard] Recorded client spin", { reels: recordSpin.reels, won: recordSpin.won });
+        }
+      }
+
       const spinsRemaining = cachedSpin ? Math.max(0, maxSpins - cachedSpin.spins) : maxSpins;
       const sessionWinRate = cachedSpin
         ? `${cachedSpin.wins}/${cachedSpin.spins} (${((cachedSpin.wins / cachedSpin.spins) * 100).toFixed(0)}%)`
@@ -478,7 +310,14 @@ server.tool(
         spinsRemaining,
         spinLimitReached: spinsRemaining <= 0,
         hasCachedSpin: !!cachedSpin,
+        recordSpin: !!recordSpin,
       });
+
+      const spinOutput = recordSpin && cachedSpin?.reels?.length === 3
+        ? (cachedSpin.won
+          ? `🎰 Jackpot! ${cachedSpin.reels[0]} ${cachedSpin.reels[1]} ${cachedSpin.reels[2]} — You won!`
+          : `🎰 ${cachedSpin.reels[0]} | ${cachedSpin.reels[1]} | ${cachedSpin.reels[2]} — Try again!`)
+        : null;
 
       return widget({
         props: {
@@ -488,7 +327,7 @@ server.tool(
           winChancePercent,
           leaderboard,
           totalContributors: closeCounts.size,
-          ...(githubUsername && { spinsRemaining, maxSpins, spinLimitReached: spinsRemaining <= 0 }),
+          ...(githubUsername && { spinsRemaining, maxSpins, spinLimitReached: spinsRemaining <= 0, winChanceDecimal }),
           ...(githubUsername && { githubUsername }),
           ...(cachedSpin && {
             slotReels: cachedSpin.reels,
@@ -498,7 +337,9 @@ server.tool(
             sessionWinRate,
           }),
         },
-        output: text(`Dashboard for ${normalized}: ${issues.length} issues, ${closeCounts.size} contributors`),
+        output: text(
+          spinOutput ?? `Dashboard for ${normalized}: ${issues.length} issues, ${closeCounts.size} contributors`
+        ),
       });
     } catch (err) {
       console.error("get-repo-dashboard failed:", err);
