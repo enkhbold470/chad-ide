@@ -10,141 +10,232 @@
 
 @variant dark (&:where(.dark, .dark *));
 
-/* Gitlot — minimal 1999-style widget */
+/* Gitlot — Liquid Glass, 3-column, ChatGPT Apps widget */
 .gitlot {
-  font-family: Verdana, Arial, sans-serif;
-  font-size: 11px;
-  max-width: 320px;
-  border: 1px solid #999;
-  background: #fff;
-}
-
-.dark .gitlot {
-  background: #1a1a1a;
-  border-color: #444;
-}
-
-.panels {
-  display: flex;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  scrollbar-width: none;
-}
-
-.panels::-webkit-scrollbar {
-  display: none;
-}
-
-.panel {
-  flex: 0 0 100%;
-  scroll-snap-align: start;
-  padding: 8px 10px;
-  min-height: 160px;
-}
-
-.panel h3 {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
   font-size: 12px;
-  font-weight: bold;
-  margin: 0 0 4px;
-  color: #333;
-}
-
-.dark .panel h3 {
-  color: #ccc;
-}
-
-.panel .meta {
-  font-size: 10px;
-  color: #666;
-  margin: 0 0 6px;
-}
-
-.panel ul, .panel ol {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.panel li {
-  padding: 3px 0;
-  border-bottom: 1px solid #eee;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.dark .panel li {
-  border-color: #333;
-}
-
-.panel a {
-  flex: 1;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  max-width: 100%;
+  width: 100%;
   min-width: 0;
-  text-decoration: none;
-  color: #06c;
+}
+
+/* 3-column grid — collapses on narrow viewports */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+@media (max-width: 480px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Liquid Glass column cards */
+.col {
+  min-width: 0;
+  padding: 12px;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    0 8px 24px rgba(0, 0, 0, 0.08);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.col:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+/* Dark mode — Liquid Glass */
+.dark .col {
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 1px 1px rgba(255, 255, 255, 0.06),
+    0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.dark .col:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Fallback when backdrop-filter unsupported */
+@supports not (backdrop-filter: blur(20px)) {
+  .col {
+    background: #fff;
+  }
+  .dark .col {
+    background: #171717;
+  }
+}
+
+.col .heading {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: #000;
+  margin: 0 0 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.panel .num {
+.dark .col .heading {
+  color: #fff;
+}
+
+.col .meta {
   font-size: 10px;
-  color: #888;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: #525252;
+  margin: 0 0 8px;
+}
+
+.dark .col .meta {
+  color: #a3a3a3;
+}
+
+.col ul,
+.col ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.col li {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dark .col li {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.col .link {
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: #0066cc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.col .link:hover {
+  text-decoration: underline;
+}
+
+.col .num {
+  font-size: 10px;
+  color: #737373;
   flex-shrink: 0;
 }
 
-.panel .rank {
+.col .rank {
   width: 16px;
   text-align: center;
-  font-weight: bold;
+  font-weight: 600;
+  font-size: 11px;
+  color: #525252;
   flex-shrink: 0;
 }
 
-.panel .ava {
-  width: 18px;
-  height: 18px;
-  border-radius: 2px;
-  flex-shrink: 0;
-  background: #ddd;
+.dark .col .rank {
+  color: #a3a3a3;
 }
 
-.panel .cnt {
-  margin-left: auto;
-  font-weight: bold;
+.col .ava {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.dark .col .ava {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.col .login {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #171717;
+}
+
+.dark .col .login {
+  color: #fafafa;
+}
+
+.col .cnt {
+  font-weight: 600;
+  font-size: 11px;
+  color: #404040;
   flex-shrink: 0;
 }
 
-.panel .empty {
-  color: #888;
-  font-size: 10px;
+.dark .col .cnt {
+  color: #d4d4d4;
+}
+
+.col .empty {
+  color: #737373;
+  font-size: 11px;
   margin: 8px 0;
 }
 
-/* Slot reels */
+/* Slot reels — squircle glass */
 .reels {
   display: flex;
   justify-content: center;
   gap: 4px;
-  margin: 6px 0;
+  margin: 8px 0;
 }
 
 .reel-box {
   width: 36px;
   height: 36px;
-  border: 1px solid #999;
+  border-radius: 0.75rem;
   overflow: hidden;
-  background: #f5f5f5;
+  background: rgba(255, 255, 255, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.5);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.reel-box.won {
-  border-color: #0a0;
-  background: #efe;
+.dark .reel-box {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.reel-box.reel-won {
+  border-color: rgba(34, 197, 94, 0.5);
+  background: rgba(34, 197, 94, 0.15);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.3), 0 0 0 1px rgba(34, 197, 94, 0.2);
 }
 
 .reel-strip {
   display: flex;
   flex-direction: column;
-  animation: reel-spin 1.8s cubic-bezier(0.15, 0.85, 0.25, 1) forwards;
+  animation: reel-spin 1.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes reel-spin {
@@ -153,79 +244,71 @@
 }
 
 .reel-cell {
-  height: 40px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: 18px;
   flex-shrink: 0;
 }
 
-.panel .win { color: #0a0; font-weight: bold; margin: 4px 0; }
-.panel .lose { color: #666; margin: 4px 0; }
+.col .win {
+  color: #16a34a;
+  font-weight: 600;
+  font-size: 12px;
+  margin: 4px 0;
+}
 
-.lever {
-  padding: 4px 12px;
+.col .lose {
+  color: #737373;
   font-size: 11px;
-  font-weight: bold;
-  border: 1px solid #666;
-  background: #ddd;
+  margin: 4px 0;
+}
+
+/* Button — pill, edge lighting */
+.btn-spin {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: #0066cc;
+  color: #fff;
   cursor: pointer;
-  margin-top: 4px;
+  margin-top: 6px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 4px 12px rgba(0, 102, 204, 0.3);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.lever:hover:not(:disabled) {
-  background: #ccc;
+.btn-spin:hover:not(:disabled) {
+  background: #0052a3;
+  transform: scale(1.02);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 6px 16px rgba(0, 102, 204, 0.35);
 }
 
-.lever:disabled {
-  opacity: 0.5;
+.btn-spin:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn-spin:disabled {
+  opacity: 0.4;
   cursor: not-allowed;
-}
-
-/* Dots */
-.dots {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-  padding: 6px;
-  border-top: 1px solid #ddd;
-  background: #f8f8f8;
-}
-
-.dark .dots {
-  border-color: #333;
-  background: #222;
-}
-
-.dots button {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  border: 1px solid #999;
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-}
-
-.dots button.active {
-  background: #333;
-  border-color: #333;
-}
-
-.dark .dots button.active {
-  background: #fff;
-  border-color: #fff;
 }
 
 /* Skeleton */
 .skeleton {
   height: 12px;
-  background: #eee;
+  background: rgba(0, 0, 0, 0.08);
   margin-bottom: 6px;
-  border-radius: 2px;
+  border-radius: 6px;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
 }
 
 .dark .skeleton {
-  background: #333;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
