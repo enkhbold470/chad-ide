@@ -1,11 +1,11 @@
 import { McpUseProvider, useCallTool, useWidget, type WidgetMetadata } from "mcp-use/react";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { z } from "zod";
 import "../styles.css";
 
-const REEL_H = 40;
-const REEL_STAGGER = 150;
-const SPIN_MS = 1800;
+const REEL_H = 36;
+const REEL_STAGGER = 120;
+const SPIN_MS = 1600;
 
 const issueSchema = z.object({ number: z.number(), title: z.string(), state: z.string(), url: z.string(), author: z.string(), createdAt: z.string() });
 const lbSchema = z.object({ rank: z.number(), login: z.string(), avatarUrl: z.string().optional(), closedCount: z.number() });
@@ -49,7 +49,7 @@ function Reel({ symbols, final, idx, won }: { symbols: string[]; final: string; 
   }, [symbols, final]);
 
   return (
-    <div className={`reel-box ${won ? "won" : ""}`}>
+    <div className={`reel-box ${won ? "reel-won" : ""}`}>
       <div className="reel-strip" style={{ "--stop": `${stop}px`, animationDelay: `${idx * REEL_STAGGER}ms` } as React.CSSProperties}>
         {strip.map((f, i) => (
           <div key={i} className="reel-cell">{FRUIT_EMOJI[f] ?? f}</div>
@@ -62,8 +62,6 @@ function Reel({ symbols, final, idx, won }: { symbols: string[]; final: string; 
 export default function RepoDashboard() {
   const { props, isPending } = useWidget<Props>();
   const { callTool: recordSpin, isPending: isSpinning } = useCallTool("get-repo-dashboard");
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(0);
   const [msgVis, setMsgVis] = useState(false);
   const [live, setLive] = useState<{ reels: string[]; won: boolean; key: number } | null>(null);
 
@@ -86,29 +84,6 @@ export default function RepoDashboard() {
     const t = setTimeout(() => setMsgVis(true), SPIN_MS + 2 * REEL_STAGGER);
     return () => clearTimeout(t);
   }, [hasResult]);
-
-  const onScroll = useCallback(() => {
-    if (!scrollRef.current) return;
-    const { scrollLeft, clientWidth } = scrollRef.current;
-    setActive(Math.min(Math.round(scrollLeft / clientWidth), 2));
-  }, []);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    onScroll();
-    el.addEventListener("scroll", onScroll);
-    window.addEventListener("resize", onScroll);
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-    };
-  }, [onScroll]);
-
-  const scrollTo = useCallback((i: number) => {
-    scrollRef.current?.scrollTo({ left: i * (scrollRef.current?.clientWidth ?? 0), behavior: "smooth" });
-    setActive(i);
-  }, []);
 
   const handleSpin = () => {
     if (!canSpin || !slotSymbols.length) return;
@@ -136,71 +111,63 @@ export default function RepoDashboard() {
     <McpUseProvider autoSize>
       <div className="gitlot">
         {isPending ? (
-          <div className="panel p-4">
-            <div className="skeleton" />
-            <div className="skeleton" />
-            <div className="skeleton" />
+          <div className="grid">
+            <div className="col"><div className="skeleton" /><div className="skeleton" /><div className="skeleton" /></div>
+            <div className="col"><div className="skeleton" /><div className="skeleton" /><div className="skeleton" /></div>
+            <div className="col"><div className="skeleton" /><div className="skeleton" /></div>
           </div>
         ) : (
-          <>
-            <div ref={scrollRef} className="panels">
-              <div className="panel">
-                <h3>{repo}</h3>
-                <p className="meta">{issues.length} {state} issues</p>
-                <ul>
-                  {issues.map((i) => (
-                    <li key={i.number}>
-                      <a href={i.url} target="_blank" rel="noopener noreferrer">{i.state === "closed" ? "✓" : "○"} {i.title}</a>
-                      <span className="num">#{i.number}</span>
-                    </li>
-                  ))}
-                </ul>
-                {issues.length === 0 && <p className="empty">No issues</p>}
-              </div>
+          <div className="grid">
+            <section className="col">
+              <h3 className="heading">{repo}</h3>
+              <p className="meta">{issues.length} {state}</p>
+              <ul>
+                {issues.slice(0, 5).map((i) => (
+                  <li key={i.number}>
+                    <a href={i.url} target="_blank" rel="noopener noreferrer" className="link">{i.state === "closed" ? "✓" : "○"} {i.title}</a>
+                    <span className="num">#{i.number}</span>
+                  </li>
+                ))}
+              </ul>
+              {issues.length === 0 && <p className="empty">No issues</p>}
+            </section>
 
-              <div className="panel">
-                <h3>Leaderboard</h3>
-                <p className="meta">{props?.totalContributors ?? 0} contributors</p>
-                <ol>
-                  {leaderboard.map((e) => (
-                    <li key={e.login}>
-                      <span className="rank">{e.rank}</span>
-                      {e.avatarUrl ? <img src={e.avatarUrl} alt="" className="ava" /> : <span className="ava" />}
-                      <span>{e.login}</span>
-                      <span className="cnt">{e.closedCount}</span>
-                    </li>
-                  ))}
-                </ol>
-                {leaderboard.length === 0 && <p className="empty">No data</p>}
-              </div>
+            <section className="col">
+              <h3 className="heading">Leaderboard</h3>
+              <p className="meta">{props?.totalContributors ?? 0} contributors</p>
+              <ol>
+                {leaderboard.slice(0, 5).map((e) => (
+                  <li key={e.login}>
+                    <span className="rank">{e.rank}</span>
+                    {e.avatarUrl ? <img src={e.avatarUrl} alt="" className="ava" /> : <span className="ava" />}
+                    <span className="login">{e.login}</span>
+                    <span className="cnt">{e.closedCount}</span>
+                  </li>
+                ))}
+              </ol>
+              {leaderboard.length === 0 && <p className="empty">No data</p>}
+            </section>
 
-              <div className="panel">
-                <h3>Slot</h3>
-                {maxSpins > 0 && <p className="meta">{spinsLeft} spins · {props?.winChancePercent ?? "5%"} win</p>}
-                {props?.sessionWinRate && <p className="meta">Rate: {props.sessionWinRate}</p>}
-                {hasResult && lastSpin && (
-                  <>
-                    <div className="reels">
-                      {lastSpin.reels.map((f, i) => (
-                        <Reel key={live ? `${live.key}-${i}` : i} symbols={slotSymbols} final={f} idx={i} won={lastSpin.won} />
-                      ))}
-                    </div>
-                    {msgVis && <p className={lastSpin.won ? "win" : "lose"}>{lastSpin.won ? "Win!" : "Try again"}</p>}
-                  </>
-                )}
-                <button type="button" onClick={handleSpin} disabled={!canSpin} className="lever" aria-label="Spin">
-                  SPIN
-                </button>
-                {!githubUsername && <p className="meta">Need username to spin</p>}
-              </div>
-            </div>
-
-            <div className="dots">
-              {[0, 1, 2].map((i) => (
-                <button key={i} type="button" onClick={() => scrollTo(i)} className={i === active ? "active" : ""} aria-label={`Panel ${i + 1}`} />
-              ))}
-            </div>
-          </>
+            <section className="col">
+              <h3 className="heading">Slot</h3>
+              {maxSpins > 0 && <p className="meta">{spinsLeft} · {props?.winChancePercent ?? "5%"}</p>}
+              {props?.sessionWinRate && <p className="meta">{props.sessionWinRate}</p>}
+              {hasResult && lastSpin && (
+                <>
+                  <div className="reels">
+                    {lastSpin.reels.map((f, i) => (
+                      <Reel key={live ? `${live.key}-${i}` : i} symbols={slotSymbols} final={f} idx={i} won={lastSpin.won} />
+                    ))}
+                  </div>
+                  {msgVis && <p className={lastSpin.won ? "win" : "lose"}>{lastSpin.won ? "Win!" : "Try again"}</p>}
+                </>
+              )}
+              <button type="button" onClick={handleSpin} disabled={!canSpin} className="btn-spin" aria-label="Spin">
+                Spin
+              </button>
+              {!githubUsername && <p className="meta">Need username</p>}
+            </section>
+          </div>
         )}
       </div>
     </McpUseProvider>
