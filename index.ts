@@ -1,12 +1,12 @@
-import { MCPServer, error, object, text, widget } from "mcp-use/server";
+import { MCPServer, error, text, widget } from "mcp-use/server";
 import { z } from "zod";
 
 const baseUrl = process.env.MCP_URL || "http://localhost:3000";
 const server = new MCPServer({
-  name: "my-widget-server",
-  title: "my-widget-server", // display name
+  name: "gitlot",
+  title: "Gitlot",
   version: "1.0.0",
-  description: "MCP server with MCP Apps integration",
+  description: "Gitlot — repo dashboard + slot machine. Close issues, get spins.",
   baseUrl, // Full base URL (e.g., https://myserver.com)
   favicon: "favicon.ico",
   websiteUrl: "https://mcp-use.com", // Can be customized later
@@ -19,67 +19,8 @@ const server = new MCPServer({
   ],
 });
 
-/**
- * TOOL THAT RETURNS A WIDGET
- * The `widget` config tells mcp-use which widget component to render.
- * The `widget()` helper in the handler passes props to that component.
- * Docs: https://mcp-use.com/docs/typescript/server/mcp-apps
- */
-
-// Fruits data — color values are Tailwind bg-[] classes used by the carousel UI
-const fruits = [
-  { fruit: "mango", color: "bg-[#FBF1E1] dark:bg-[#FBF1E1]/10" },
-  { fruit: "pineapple", color: "bg-[#f8f0d9] dark:bg-[#f8f0d9]/10" },
-  { fruit: "cherries", color: "bg-[#E2EDDC] dark:bg-[#E2EDDC]/10" },
-  { fruit: "coconut", color: "bg-[#fbedd3] dark:bg-[#fbedd3]/10" },
-  { fruit: "apricot", color: "bg-[#fee6ca] dark:bg-[#fee6ca]/10" },
-  { fruit: "blueberry", color: "bg-[#e0e6e6] dark:bg-[#e0e6e6]/10" },
-  { fruit: "grapes", color: "bg-[#f4ebe2] dark:bg-[#f4ebe2]/10" },
-  { fruit: "watermelon", color: "bg-[#e6eddb] dark:bg-[#e6eddb]/10" },
-  { fruit: "orange", color: "bg-[#fdebdf] dark:bg-[#fdebdf]/10" },
-  { fruit: "avocado", color: "bg-[#ecefda] dark:bg-[#ecefda]/10" },
-  { fruit: "apple", color: "bg-[#F9E7E4] dark:bg-[#F9E7E4]/10" },
-  { fruit: "pear", color: "bg-[#f1f1cf] dark:bg-[#f1f1cf]/10" },
-  { fruit: "plum", color: "bg-[#ece5ec] dark:bg-[#ece5ec]/10" },
-  { fruit: "banana", color: "bg-[#fdf0dd] dark:bg-[#fdf0dd]/10" },
-  { fruit: "strawberry", color: "bg-[#f7e6df] dark:bg-[#f7e6df]/10" },
-  { fruit: "lemon", color: "bg-[#feeecd] dark:bg-[#feeecd]/10" },
-];
-
-server.tool(
-  {
-    name: "search-tools",
-    description: "Search for fruits and display the results in a visual widget",
-    schema: z.object({
-      query: z.string().optional().describe("Search query to filter fruits"),
-    }),
-    widget: {
-      name: "product-search-result",
-      invoking: "Searching...",
-      invoked: "Results loaded",
-    },
-  },
-  async ({ query }) => {
-    const results = fruits.filter(
-      (f) => !query || f.fruit.toLowerCase().includes(query.toLowerCase())
-    );
-
-    // let's emulate a delay to show the loading state
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    return widget({
-      props: { query: query ?? "", results },
-      output: text(
-        `Found ${results.length} fruits matching "${query ?? "all"}"`
-      ),
-    });
-  }
-);
-
-/**
- * Slot machine constants — odds improve with issues closed in the repo.
- */
-const SLOT_SYMBOLS = fruits.map((f) => f.fruit);
+/** Slot symbols — odds improve with issues closed. */
+const SLOT_SYMBOLS = ["apple", "banana", "cherry", "grape", "lemon", "orange"];
 const BASE_WIN_CHANCE = 0.05; // 5% base chance for 3-of-a-kind
 const MAX_CONTRIBUTION_BONUS = 0.25; // up to 25% bonus → 30% max win chance
 const CONTRIBUTION_PER_ISSUE = 100; // each closed issue = 100 contribution points
@@ -202,7 +143,6 @@ server.tool(
     },
   },
   async ({ repo, githubUsername, state = "all", limit = 30, recordSpin }) => {
-    console.log("[get-repo-dashboard] Called with", { repo, githubUsername, state, limit, recordSpin });
     const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
     const [owner, name] = normalized.split("/");
     if (!owner || !name) {
@@ -293,7 +233,6 @@ server.tool(
             spins,
           };
           spinSessionCache.set(sessionKey, cachedSpin);
-          console.log("[get-repo-dashboard] Recorded client spin", { reels: recordSpin.reels, won: recordSpin.won });
         }
       }
 
@@ -301,17 +240,6 @@ server.tool(
       const sessionWinRate = cachedSpin
         ? `${cachedSpin.wins}/${cachedSpin.spins} (${((cachedSpin.wins / cachedSpin.spins) * 100).toFixed(0)}%)`
         : undefined;
-
-      console.log("[get-repo-dashboard] Returning widget props", {
-        repo: normalized,
-        githubUsername,
-        issuesClosed,
-        maxSpins,
-        spinsRemaining,
-        spinLimitReached: spinsRemaining <= 0,
-        hasCachedSpin: !!cachedSpin,
-        recordSpin: !!recordSpin,
-      });
 
       const spinOutput = recordSpin && cachedSpin?.reels?.length === 3
         ? (cachedSpin.won
