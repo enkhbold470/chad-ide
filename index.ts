@@ -77,7 +77,7 @@ server.tool(
 );
 
 /**
- * Slot machine tool — spin and win. Odds improve with issues closed in the repo.
+ * Slot machine constants — odds improve with issues closed in the repo.
  */
 const SLOT_SYMBOLS = fruits.map((f) => f.fruit);
 const BASE_WIN_CHANCE = 0.05; // 5% base chance for 3-of-a-kind
@@ -85,215 +85,16 @@ const MAX_CONTRIBUTION_BONUS = 0.25; // up to 25% bonus → 30% max win chance
 const CONTRIBUTION_PER_ISSUE = 100; // each closed issue = 100 contribution points
 const CONTRIBUTION_SCALE = 5000; // 50 issues closed ≈ max bonus
 
-server.tool(
-  {
-    name: "slot-machine-spin",
-    description:
-      "Spin the slot machine. Winning chance is based on how many issues the user has closed in the repo. Provide repo and GitHub username to look up their count automatically.",
-    schema: z.object({
-      repo: z
-        .string()
-        .describe(
-          "Repository in owner/repo format (e.g. facebook/react). Used to look up user's closed-issue count."
-        ),
-      githubUsername: z
-        .string()
-        .describe(
-          "The GitHub username of the person spinning. Their closed-issue count in the repo determines win chance."
-        ),
-    }),
-    widget: {
-      name: "slot-machine-result",
-      invoking: "Spinning...",
-      invoked: "Spin complete",
-    },
-  },
-  async ({ repo, githubUsername }) => {
-    let issuesClosed = 0;
-    try {
-      const { closeCounts } = await fetchLeaderboardData(repo);
-      const user = closeCounts.get(githubUsername);
-      issuesClosed = user?.count ?? 0;
-    } catch {
-      // Fall back to base odds if leaderboard fetch fails
-    }
+/** Per-session spin cache: repo:username → last spin + win rate. Persists across tool calls in chat session. */
+const spinSessionCache = new Map<
+  string,
+  { reels: string[]; won: boolean; winChancePercent: string; wins: number; spins: number }
+>();
 
-    const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
-    const contributionBonus = Math.min(
-      contribution / CONTRIBUTION_SCALE,
-      MAX_CONTRIBUTION_BONUS
-    );
-    const winChance = BASE_WIN_CHANCE + contributionBonus;
-
-    const willForceWin = Math.random() < winChance;
-    const reel1: string =
-      SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-    const reel2 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-    const reel3 = willForceWin ? reel1 : SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)];
-
-    const won = reel1 === reel2 && reel2 === reel3;
-
-    const imageUrl = (fruit: string) =>
-      `${baseUrl.replace(/\/$/, "")}/fruits/${fruit}.png`;
-
-    const reels = [reel1, reel2, reel3];
-    const reelImages = [imageUrl(reel1), imageUrl(reel2), imageUrl(reel3)];
-    const message = won
-      ? `🎰 Jackpot! ${reel1} ${reel1} ${reel1} — You won!`
-      : `🎰 ${reel1} | ${reel2} | ${reel3} — Try again!`;
-
-    return widget({
-      props: {
-        reels,
-        reelImages,
-        symbols: SLOT_SYMBOLS,
-        won,
-        issuesClosed,
-        winChanceUsed: winChance,
-        message,
-      },
-      output: text(message),
-    });
-  }
-);
-
-/**
- * Fetch a public GitHub repo's issue list.
- */
-server.tool(
-  {
-    name: "get-repo-issues",
-    description:
-      "Get the list of issues from a public GitHub repository. Use owner/repo format (e.g. facebook/react).",
-    schema: z.object({
-      repo: z
-        .string()
-        .describe(
-          "Repository in owner/repo format (e.g. facebook/react, vercel/next.js)"
-        ),
-      state: z
-        .enum(["open", "closed", "all"])
-        .optional()
-        .describe("Filter by issue state. Default: open"),
-      limit: z
-        .number()
-        .min(1)
-        .max(100)
-        .optional()
-        .describe("Max number of issues to return. Default: 30"),
-      githubUsername: z
-        .string()
-        .optional()
-        .describe(
-          "GitHub username of the viewer. Used to show their next spin win chance (5% base + bonus per issue closed)."
-        ),
-    }),
-    annotations: { openWorldHint: true },
-    widget: {
-      name: "repo-issues-todo",
-      invoking: "Fetching issues...",
-      invoked: "Issues loaded",
-    },
-  },
-  async ({ repo, state = "open", limit = 30, githubUsername }) => {
-    const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
-    const [owner, name] = normalized.split("/");
-    if (!owner || !name) {
-      return error("Invalid repo format. Use owner/repo (e.g. facebook/react)");
-    }
-
-    try {
-      const params = new URLSearchParams({
-        state,
-        per_page: String(Math.min(limit, 100)),
-        page: "1",
-      });
-      const headers: Record<string, string> = {
-        Accept: "application/vnd.github.v3+json",
-        "User-Agent": "mcp-widget-server",
-      };
-      const token = process.env.GITHUB_TOKEN;
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
-      }
-      const res = await fetch(
-        `https://api.github.com/repos/${owner}/${name}/issues?${params}`,
-        { headers }
-      );
-
-      if (!res.ok) {
-        if (res.status === 404) {
-          return error(`Repository not found: ${repo}`);
-        }
-        if (res.status === 403) {
-          return error(
-            "GitHub API rate limit exceeded. Try again later or use a GitHub token."
-          );
-        }
-        return error(`GitHub API error: ${res.status} ${res.statusText}`);
-      }
-
-      const data = (await res.json()) as Array<{
-        pull_request?: unknown;
-        number: number;
-        title: string;
-        state: string;
-        html_url: string;
-        user?: { login: string };
-        created_at: string;
-      }>;
-      const issues = data
-        .filter((item) => !item.pull_request)
-        .slice(0, limit)
-        .map((item) => ({
-          number: item.number,
-          title: item.title,
-          state: item.state,
-          url: item.html_url,
-          author: item.user?.login ?? "unknown",
-          createdAt: item.created_at,
-        }));
-
-      let issuesClosed = 0;
-      if (githubUsername) {
-        try {
-          const { closeCounts } = await fetchLeaderboardData(repo);
-          issuesClosed = closeCounts.get(githubUsername)?.count ?? 0;
-        } catch {
-          // Use base odds if leaderboard fetch fails
-        }
-      }
-
-      const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
-      const contributionBonus = Math.min(
-        contribution / CONTRIBUTION_SCALE,
-        MAX_CONTRIBUTION_BONUS
-      );
-      const winChancePercent = (
-        (BASE_WIN_CHANCE + contributionBonus) *
-        100
-      ).toFixed(1);
-
-      return widget({
-        props: {
-          repo: normalized,
-          state,
-          issues,
-          count: issues.length,
-          winChancePercent: githubUsername ? `${winChancePercent}%` : undefined,
-        },
-        output: text(
-          `Found ${issues.length} ${state} issues in ${normalized}`
-        ),
-      });
-    } catch (err) {
-      console.error("get-repo-issues failed:", err);
-      return error(
-        `Failed to fetch issues: ${err instanceof Error ? err.message : "Unknown error"}`
-      );
-    }
-  }
-);
+function getSpinSessionKey(repo: string, username: string) {
+  const n = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
+  return `${n}:${username}`;
+}
 
 /** Leaderboard cache: 24h TTL. Stores full closeCounts per repo. */
 const leaderboardCache = new Map<
@@ -370,49 +171,87 @@ async function fetchLeaderboardData(repo: string, pages = 3): Promise<{
 }
 
 /**
- * Leaderboard: who closed the most issues in a repo.
- * Uses GitHub issue events API (closed events).
- * Cached for 24h; re-fetches daily. Cumulative counts never reset.
+ * Combined dashboard: issues + leaderboard + slot machine. One tool only.
+ * Spinning is client-side: user pulls lever, widget runs animation and picks outcome,
+ * then calls with recordSpin to persist. Server never executes a spin.
  */
 server.tool(
   {
-    name: "get-repo-issues-leaderboard",
+    name: "get-repo-dashboard",
     description:
-      "Get a leaderboard of who closed the most issues in a public GitHub repository. Uses owner/repo format.",
+      "Get a combined dashboard for a GitHub repo: issues, leaderboard, and slot machine info. Scroll horizontally between panels. Dots show which panel you're viewing.",
     schema: z.object({
       repo: z
         .string()
-        .describe(
-          "Repository in owner/repo format (e.g. facebook/react, enkhbold470/chad-ide)"
-        ),
-      limit: z
-        .number()
-        .min(1)
-        .max(50)
-        .optional()
-        .describe("Max number of top contributors to return. Default: 10"),
-      pages: z
-        .number()
-        .min(1)
-        .max(5)
-        .optional()
-        .describe(
-          "Number of event pages to fetch (100 events per page). More = more history. Default: 2"
-        ),
+        .describe("Repository in owner/repo format (e.g. enkhbold470/chad-ide)"),
+      githubUsername: z
+        .string()
+        .describe("GitHub username (required). Needed for slot machine, win chance, and spins."),
+      state: z.enum(["open", "closed", "all"]).optional().describe("Issue filter. Default: all (show both open and closed from repo)."),
+      limit: z.number().min(1).max(100).optional().describe("Max issues. Default: 30"),
+      recordSpin: z.object({
+        reels: z.array(z.string()).length(3),
+        won: z.boolean(),
+      }).optional().describe("Client sends spin outcome after user pulls lever. Server records it and returns updated dashboard."),
     }),
     annotations: { openWorldHint: true },
     widget: {
-      name: "repo-issues-leaderboard",
-      invoking: "Fetching leaderboard...",
-      invoked: "Leaderboard loaded",
+      name: "repo-dashboard",
+      invoking: "Loading dashboard...",
+      invoked: "Dashboard loaded",
     },
   },
-  async ({ repo, limit = 10, pages = 3 }) => {
+  async ({ repo, githubUsername, state = "all", limit = 30, recordSpin }) => {
+    console.log("[get-repo-dashboard] Called with", { repo, githubUsername, state, limit, recordSpin });
+    const normalized = repo.replace(/^https?:\/\/github\.com\//, "").replace(/\/$/, "");
+    const [owner, name] = normalized.split("/");
+    if (!owner || !name) {
+      return error("Invalid repo format. Use owner/repo (e.g. facebook/react)");
+    }
+
     try {
-      const { repo: normalized, closeCounts } = await fetchLeaderboardData(
-        repo,
-        pages
-      );
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "mcp-widget-server",
+      };
+      const token = process.env.GITHUB_TOKEN;
+      if (token) headers.Authorization = `Bearer ${token}`;
+
+      const [issuesRes, { closeCounts }] = await Promise.all([
+        fetch(
+          `https://api.github.com/repos/${owner}/${name}/issues?state=${state}&per_page=${Math.min(limit, 100)}&page=1`,
+          { headers }
+        ),
+        fetchLeaderboardData(repo),
+      ]);
+
+      if (!issuesRes.ok) {
+        if (issuesRes.status === 404) return error(`Repository not found: ${repo}`);
+        if (issuesRes.status === 403)
+          return error("GitHub API rate limit exceeded. Use GITHUB_TOKEN for higher limits.");
+        return error(`GitHub API error: ${issuesRes.status} ${issuesRes.statusText}`);
+      }
+
+      const issuesData = (await issuesRes.json()) as Array<{
+        pull_request?: unknown;
+        number: number;
+        title: string;
+        state: string;
+        html_url: string;
+        user?: { login: string };
+        created_at: string;
+      }>;
+      const issues = issuesData
+        .filter((item) => !item.pull_request)
+        .slice(0, limit)
+        .map((item) => ({
+          number: item.number,
+          title: item.title,
+          state: item.state,
+          url: item.html_url,
+          author: item.user?.login ?? "unknown",
+          createdAt: item.created_at,
+        }));
 
       const leaderboard = Array.from(closeCounts.entries())
         .map(([login, { count, avatarUrl }]) => ({
@@ -422,27 +261,90 @@ server.tool(
           closedCount: count,
         }))
         .sort((a, b) => b.closedCount - a.closedCount)
-        .slice(0, limit)
+        .slice(0, 10)
         .map((row, i) => ({ ...row, rank: i + 1 }));
 
-      const result = {
+      let winChancePercent: string | undefined;
+      let winChanceDecimal: number | undefined;
+      const issuesClosed = githubUsername ? closeCounts.get(githubUsername)?.count ?? 0 : 0;
+      if (githubUsername) {
+        const contribution = issuesClosed * CONTRIBUTION_PER_ISSUE;
+        const bonus = Math.min(contribution / CONTRIBUTION_SCALE, MAX_CONTRIBUTION_BONUS);
+        winChanceDecimal = BASE_WIN_CHANCE + bonus;
+        winChancePercent = `${(winChanceDecimal * 100).toFixed(1)}%`;
+      }
+
+      const sessionKey = githubUsername ? getSpinSessionKey(normalized, githubUsername) : null;
+      let cachedSpin = sessionKey ? spinSessionCache.get(sessionKey) : null;
+      const maxSpins = issuesClosed;
+
+      // Record client-side spin outcome (no server-side spin execution)
+      if (recordSpin && githubUsername && sessionKey) {
+        const spinsUsed = cachedSpin?.spins ?? 0;
+        if (spinsUsed < maxSpins) {
+          const existing = spinSessionCache.get(sessionKey);
+          const wins = (existing?.wins ?? 0) + (recordSpin.won ? 1 : 0);
+          const spins = (existing?.spins ?? 0) + 1;
+          cachedSpin = {
+            reels: recordSpin.reels,
+            won: recordSpin.won,
+            winChancePercent: winChancePercent ?? "5%",
+            wins,
+            spins,
+          };
+          spinSessionCache.set(sessionKey, cachedSpin);
+          console.log("[get-repo-dashboard] Recorded client spin", { reels: recordSpin.reels, won: recordSpin.won });
+        }
+      }
+
+      const spinsRemaining = cachedSpin ? Math.max(0, maxSpins - cachedSpin.spins) : maxSpins;
+      const sessionWinRate = cachedSpin
+        ? `${cachedSpin.wins}/${cachedSpin.spins} (${((cachedSpin.wins / cachedSpin.spins) * 100).toFixed(0)}%)`
+        : undefined;
+
+      console.log("[get-repo-dashboard] Returning widget props", {
         repo: normalized,
-        leaderboard,
-        totalContributors: closeCounts.size,
-      };
+        githubUsername,
+        issuesClosed,
+        maxSpins,
+        spinsRemaining,
+        spinLimitReached: spinsRemaining <= 0,
+        hasCachedSpin: !!cachedSpin,
+        recordSpin: !!recordSpin,
+      });
+
+      const spinOutput = recordSpin && cachedSpin?.reels?.length === 3
+        ? (cachedSpin.won
+          ? `🎰 Jackpot! ${cachedSpin.reels[0]} ${cachedSpin.reels[1]} ${cachedSpin.reels[2]} — You won!`
+          : `🎰 ${cachedSpin.reels[0]} | ${cachedSpin.reels[1]} | ${cachedSpin.reels[2]} — Try again!`)
+        : null;
 
       return widget({
-        props: result,
+        props: {
+          repo: normalized,
+          state,
+          issues,
+          winChancePercent,
+          leaderboard,
+          totalContributors: closeCounts.size,
+          ...(githubUsername && { spinsRemaining, maxSpins, spinLimitReached: spinsRemaining <= 0, winChanceDecimal }),
+          ...(githubUsername && { githubUsername }),
+          ...(cachedSpin && {
+            slotReels: cachedSpin.reels,
+            slotSymbols: SLOT_SYMBOLS,
+            slotWon: cachedSpin.won,
+            slotSpinComplete: true,
+            sessionWinRate,
+          }),
+        },
         output: text(
-          `Leaderboard for ${normalized}: ${leaderboard
-            .map((r) => `${r.rank}. ${r.login} (${r.closedCount})`)
-            .join(", ")}`
+          spinOutput ?? `Dashboard for ${normalized}: ${issues.length} issues, ${closeCounts.size} contributors`
         ),
       });
     } catch (err) {
-      console.error("get-repo-issues-leaderboard failed:", err);
+      console.error("get-repo-dashboard failed:", err);
       return error(
-        `Failed to fetch leaderboard: ${err instanceof Error ? err.message : "Unknown"}`
+        `Failed to load dashboard: ${err instanceof Error ? err.message : "Unknown error"}`
       );
     }
   }
